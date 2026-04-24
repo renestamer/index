@@ -220,6 +220,7 @@ input[type=file]{display:none}
   .toast{width:calc(100% - 2rem);text-align:center;white-space:normal}
 }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
 <body>
 <div class="topbar">
@@ -266,6 +267,7 @@ input[type=file]{display:none}
     <!-- camera view (shared) -->
     <div style="position:relative;background:#000;min-height:240px;display:flex;align-items:center;justify-content:center">
       <video id="scan-video" autoplay playsinline muted style="width:100%;max-height:280px;display:block;object-fit:cover"></video>
+      <canvas id="scan-canvas" style="display:none"></canvas>
       <div id="scan-overlay" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none">
         <div id="scan-frame" style="width:200px;height:140px;border:3px solid #F57C20;border-radius:12px;box-shadow:0 0 0 2000px rgba(0,0,0,.45)"></div>
       </div>
@@ -298,18 +300,126 @@ input[type=file]{display:none}
   </div>
 </div>
 <script>
+/* Guard: if firebase loads async, wait for it */
+window._firebaseReady=false;
+</script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js" onload="window._fbAppLoaded=true;window._tryInitFirebase&&window._tryInitFirebase()"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js" onload="window._fbFSLoaded=true;window._tryInitFirebase&&window._tryInitFirebase()"></script>
+<script>
 var DB_KEY='iloq_v6';
 var TRASH_DAYS=30;
-var DB=loadDB();
+var DB={clients:[],locations:[],projects:[],doors:[],trash:[],installers:[]};
+var _db=null; // Firestore instance
+
+/* ── Firebase init ── */
+var firebaseConfig={
+  apiKey:"AIzaSyBPwE3ODPiRtFHuD1Qu3o3y996LxWf8X5M",
+  authDomain:"installation-app-a5724.firebaseapp.com",
+  projectId:"installation-app-a5724",
+  storageBucket:"installation-app-a5724.firebasestorage.app",
+  messagingSenderId:"200078340923",
+  appId:"1:200078340923:web:bcbb40b99a9b82b3eb3d1e"
+};
+window._tryInitFirebase=function(){
+  if(!window._fbAppLoaded||!window._fbFSLoaded)return;
+  if(window._firebaseReady)return;
+  window._firebaseReady=true;
+  firebase.initializeApp(firebaseConfig);
+  _db=firebase.firestore();
+};
+// Try immediately in case scripts already loaded synchronously
+if(typeof firebase!=='undefined'){
+  firebase.initializeApp(firebaseConfig);
+  _db=firebase.firestore();
+  window._firebaseReady=true;
+}
+
+/* ── Load all data from Firestore ── */
+function loadDB(){
+  return new Promise(function(resolve){
+    var mainPromise=_db.collection('appdata').doc('main').get();
+    var doorsPromise=_db.collection('doors').get();
+    Promise.all([mainPromise,doorsPromise])
+      .then(function(results){
+        var mainDoc=results[0];
+        var doorsSnap=results[1];
+        if(mainDoc.exists){
+          var d=mainDoc.data();
+          if(!d.installers)d.installers=[];
+          if(!d.trash)d.trash=[];
+          DB=d;
+        }
+        DB.doors=[];
+        doorsSnap.forEach(function(doc){DB.doors.push(doc.data());});
+        // Local backup
+        try{localStorage.setItem(DB_KEY,JSON.stringify(DB));}catch(e){}
+        resolve(DB);
+      })
+      .catch(function(e){
+        console.error('Firebase load error:',e);
+        var r=localStorage.getItem(DB_KEY);
+        if(r)try{DB=JSON.parse(r);}catch(ex){}
+        if(!DB.doors)DB.doors=[];
+        resolve(DB);
+      });
+  });
+}
 var session={role:null,projectId:null};
 var sessionLang=localStorage.getItem('iloq_lang')||'nl';
 var AV={screen:'dashboard',clientId:null,locationId:null,projectId:null,doorId:null,category:null};
 var photoTarget=null;
 var _confirmCb=null;
 var _loginRole=null;
+var _scanEngine='jsqr';
 
-function loadDB(){var r=localStorage.getItem(DB_KEY);if(r)try{var d=JSON.parse(r);if(!d.installers)d.installers=[];return d;}catch(e){}return{clients:[],locations:[],projects:[],doors:[],trash:[],installers:[]};}
-function saveDB(){localStorage.setItem(DB_KEY,JSON.stringify(DB));}
+/* loadDB defined above */
+var _saveTimer=null;
+function saveDB(){
+  if(_saveTimer)clearTimeout(_saveTimer);
+  _saveTimer=setTimeout(function(){
+    _saveTimer=null;
+    _writeToFirestore();
+  },300);
+}
+function saveDBNow(){
+  if(_saveTimer){clearTimeout(_saveTimer);_saveTimer=null;}
+  _writeToFirestore();
+}
+function _deleteDoorsFromFirestore(doorIds){
+  if(!_db||!doorIds||!doorIds.length)return;
+  var batch=_db.batch();
+  doorIds.forEach(function(id){
+    batch.delete(_db.collection('doors').doc(id));
+  });
+  batch.commit().catch(function(e){console.error('Firebase delete error:',e);});
+}
+
+function _writeToFirestore(){
+  if(!_db)return;
+  // Split: main doc gets everything except doors (to stay under 1MB limit)
+  // Each door gets its own document (photos can be large)
+  var mainDoc={
+    clients:DB.clients||[],
+    locations:DB.locations||[],
+    projects:DB.projects||[],
+    installers:DB.installers||[],
+    trash:DB.trash||[]
+  };
+  var batch=_db.batch();
+  batch.set(_db.collection('appdata').doc('main'), mainDoc);
+  (DB.doors||[]).forEach(function(door){
+    batch.set(_db.collection('doors').doc(door.id), door);
+  });
+  batch.commit()
+    .then(function(){
+      try{localStorage.setItem(DB_KEY,JSON.stringify(DB));}catch(e){}
+    })
+    .catch(function(e){
+      console.error('Firebase save error:',e);
+      showToast('Opslaan mislukt — controleer verbinding',false);
+      try{localStorage.setItem(DB_KEY,JSON.stringify(DB));}catch(ex){}
+    });
+}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
 function byId(id){return document.getElementById(id);}
 function closeModal(id){byId(id).classList.remove('open');}
@@ -719,7 +829,7 @@ function renderTrash(){
 
 function archiveProject(pid){var p=DB.projects.find(function(x){return x.id===pid;});if(!p)return;p.archived=true;p.archivedAt=new Date().toISOString();saveDB();showToast('Project gearchiveerd');adminGo('dashboard');}
 function unarchiveProject(pid){var p=DB.projects.find(function(x){return x.id===pid;});if(!p)return;p.archived=false;delete p.archivedAt;saveDB();showToast('Project teruggezet');renderArchive();}
-function deleteProject(pid){var p=DB.projects.find(function(x){return x.id===pid;});if(!p)return;showConfirm('Project "'+p.name+'" naar prullenbak?',function(){var rd=DB.doors.filter(function(d){return d.projectId===pid;});moveToTrash('project',p,{doors:rd});DB.projects=DB.projects.filter(function(x){return x.id!==pid;});DB.doors=DB.doors.filter(function(d){return d.projectId!==pid;});saveDB();showToast('Project naar prullenbak');if(AV.screen==='archive')renderArchive();else adminGo('dashboard');});}
+function deleteProject(pid){var p=DB.projects.find(function(x){return x.id===pid;});if(!p)return;showConfirm('Project "'+p.name+'" naar prullenbak?',function(){var rd=DB.doors.filter(function(d){return d.projectId===pid;});moveToTrash('project',p,{doors:rd});DB.projects=DB.projects.filter(function(x){return x.id!==pid;});var _prevDoorIds=(DB.doors||[]).map(function(d){return d.id;});DB.doors=DB.doors.filter(function(d){return d.projectId!==pid;});var _newDoorIds=(DB.doors||[]).map(function(d){return d.id;});_deleteDoorsFromFirestore(_prevDoorIds.filter(function(id){return _newDoorIds.indexOf(id)<0;}));saveDB();showToast('Project naar prullenbak');if(AV.screen==='archive')renderArchive();else adminGo('dashboard');});}
 
 /* ── Clients ── */
 function renderClientList(){
@@ -1317,10 +1427,10 @@ function resendInviteEmail(iid){
 function openNewClient(){openModal('<h2>Nieuwe klant</h2><div class="form-group"><label>Naam *</label><input id="mc-name" placeholder="Naam organisatie"></div><div class="form-row"><div class="form-group"><label>Contact</label><input id="mc-contact"></div><div class="form-group"><label>E-mail</label><input id="mc-email" type="email"></div></div><div class="form-group"><label>Notitie</label><textarea id="mc-note"></textarea></div><div class="modal-footer"><button class="btn" onclick="closeModal(\'modal-generic\')">Annuleren</button><button class="btn btn-primary" onclick="saveClient()">Opslaan</button></div>');}
 function openEditClient(id){var c=DB.clients.find(function(x){return x.id===id;});openModal('<h2>Klant bewerken</h2><div class="form-group"><label>Naam *</label><input id="mc-name" value="'+c.name+'"></div><div class="form-row"><div class="form-group"><label>Contact</label><input id="mc-contact" value="'+(c.contact||'')+'"></div><div class="form-group"><label>E-mail</label><input id="mc-email" value="'+(c.email||'')+'"></div></div><div class="form-group"><label>Notitie</label><textarea id="mc-note">'+(c.note||'')+'</textarea></div><div class="modal-footer"><button class="btn" onclick="closeModal(\'modal-generic\')">Annuleren</button><button class="btn btn-primary" onclick="saveClient(\''+id+'\')">Opslaan</button></div>');}
 function saveClient(id){var name=byId('mc-name').value.trim();if(!name)return;if(id){var c=DB.clients.find(function(x){return x.id===id;});c.name=name;c.contact=byId('mc-contact').value.trim();c.email=byId('mc-email').value.trim();c.note=byId('mc-note').value.trim();}else DB.clients.push({id:uid(),name:name,contact:byId('mc-contact').value.trim(),email:byId('mc-email').value.trim(),note:byId('mc-note').value.trim()});saveDB();closeModal('modal-generic');renderClientList();showToast('Klant opgeslagen');}
-function deleteClient(id){var c=DB.clients.find(function(x){return x.id===id;});if(!c)return;showConfirm('Klant "'+c.name+'" naar prullenbak?',function(){var lids=DB.locations.filter(function(l){return l.clientId===id;});var pids=DB.projects.filter(function(p){return lids.some(function(l){return l.id===p.locationId;});});var rd=DB.doors.filter(function(d){return pids.some(function(p){return p.id===d.projectId;});});moveToTrash('client',c,{locations:lids,projects:pids,doors:rd});DB.clients=DB.clients.filter(function(x){return x.id!==id;});DB.locations=DB.locations.filter(function(l){return l.clientId!==id;});DB.projects=DB.projects.filter(function(p){return !pids.some(function(x){return x.id===p.id;});});DB.doors=DB.doors.filter(function(d){return !rd.some(function(x){return x.id===d.id;});});saveDB();renderClientList();showToast('Klant naar prullenbak');});}
+function deleteClient(id){var c=DB.clients.find(function(x){return x.id===id;});if(!c)return;showConfirm('Klant "'+c.name+'" naar prullenbak?',function(){var lids=DB.locations.filter(function(l){return l.clientId===id;});var pids=DB.projects.filter(function(p){return lids.some(function(l){return l.id===p.locationId;});});var rd=DB.doors.filter(function(d){return pids.some(function(p){return p.id===d.projectId;});});moveToTrash('client',c,{locations:lids,projects:pids,doors:rd});DB.clients=DB.clients.filter(function(x){return x.id!==id;});DB.locations=DB.locations.filter(function(l){return l.clientId!==id;});DB.projects=DB.projects.filter(function(p){return !pids.some(function(x){return x.id===p.id;});});var _prevDoorIds=(DB.doors||[]).map(function(d){return d.id;});DB.doors=DB.doors.filter(function(d){return !rd.some(function(x){return x.id===d.id;});var _newDoorIds=(DB.doors||[]).map(function(d){return d.id;});_deleteDoorsFromFirestore(_prevDoorIds.filter(function(id){return _newDoorIds.indexOf(id)<0;}));});saveDB();renderClientList();showToast('Klant naar prullenbak');});}
 function openNewLocation(cid){openModal('<h2>Locatie toevoegen</h2><div class="form-group"><label>Naam *</label><input id="ml-name" placeholder="b.v. Blok A"></div><div class="form-row"><div class="form-group"><label>Adres</label><input id="ml-addr" placeholder="Straat + nr."></div><div class="form-group"><label>Stad</label><input id="ml-city"></div></div><div class="form-group"><label>Notitie</label><textarea id="ml-note"></textarea></div><div class="modal-footer"><button class="btn" onclick="closeModal(\'modal-generic\')">Annuleren</button><button class="btn btn-primary" onclick="saveLocation(\''+cid+'\')">Opslaan</button></div>');}
 function saveLocation(cid,lid){var name=byId('ml-name').value.trim();if(!name)return;if(lid){var l=DB.locations.find(function(x){return x.id===lid;});l.name=name;l.address=byId('ml-addr').value.trim();l.city=byId('ml-city').value.trim();l.note=byId('ml-note').value.trim();}else DB.locations.push({id:uid(),clientId:cid,name:name,address:byId('ml-addr').value.trim(),city:byId('ml-city').value.trim(),note:byId('ml-note').value.trim()});saveDB();closeModal('modal-generic');renderClientDetail(cid);showToast('Locatie opgeslagen');}
-function deleteLocation(lid){var loc=DB.locations.find(function(x){return x.id===lid;});if(!loc)return;showConfirm('Locatie "'+loc.name+'" naar prullenbak?',function(){var rp=DB.projects.filter(function(p){return p.locationId===lid;});var rd=DB.doors.filter(function(d){return rp.some(function(p){return p.id===d.projectId;});});moveToTrash('location',loc,{projects:rp,doors:rd});DB.locations=DB.locations.filter(function(l){return l.id!==lid;});DB.projects=DB.projects.filter(function(p){return p.locationId!==lid;});DB.doors=DB.doors.filter(function(d){return !rd.some(function(x){return x.id===d.id;});});saveDB();adminRoute();showToast('Locatie naar prullenbak');});}
+function deleteLocation(lid){var loc=DB.locations.find(function(x){return x.id===lid;});if(!loc)return;showConfirm('Locatie "'+loc.name+'" naar prullenbak?',function(){var rp=DB.projects.filter(function(p){return p.locationId===lid;});var rd=DB.doors.filter(function(d){return rp.some(function(p){return p.id===d.projectId;});});moveToTrash('location',loc,{projects:rp,doors:rd});DB.locations=DB.locations.filter(function(l){return l.id!==lid;});DB.projects=DB.projects.filter(function(p){return p.locationId!==lid;});var _prevDoorIds=(DB.doors||[]).map(function(d){return d.id;});DB.doors=DB.doors.filter(function(d){return !rd.some(function(x){return x.id===d.id;});var _newDoorIds=(DB.doors||[]).map(function(d){return d.id;});_deleteDoorsFromFirestore(_prevDoorIds.filter(function(id){return _newDoorIds.indexOf(id)<0;}));});saveDB();adminRoute();showToast('Locatie naar prullenbak');});}
 
 function openNewProject(prefillLid){
   var hasLocs=DB.locations.length>0;
@@ -1336,8 +1446,8 @@ function openAddDoor(pid){openModal(doorFormHtml(pid,null));}
 function openEditDoor(did){var d=DB.doors.find(function(x){return x.id===did;});if(!d)return;openModal(doorFormHtml(d.projectId,d));}
 function saveDoor(pid){DB.doors.push({id:uid(),projectId:pid,verdieping:byId('df-verd').value.trim(),kamer:byId('df-kamer').value.trim(),naam:byId('df-naam').value.trim(),type:byId('df-type').value,adres:byId('df-adres').value.trim(),serial:byId('df-serial').value.trim(),datum:byId('df-datum').value,monteur:byId('df-monteur').value.trim(),bewoner:byId('df-bewoner').value.trim(),wandlezer:byId('df-wand').checked,notitie:byId('df-note').value.trim(),checked:{},notes:{},photos:{},scores:{}});saveDB();closeModal('modal-generic');renderProjectDetail(pid);showToast('Deur toegevoegd');}
 function saveDoorEdit(did,pid){var d=DB.doors.find(function(x){return x.id===did;});Object.assign(d,{verdieping:byId('df-verd').value.trim(),kamer:byId('df-kamer').value.trim(),naam:byId('df-naam').value.trim(),type:byId('df-type').value,adres:byId('df-adres').value.trim(),serial:byId('df-serial').value.trim(),datum:byId('df-datum').value,monteur:byId('df-monteur').value.trim(),bewoner:byId('df-bewoner').value.trim(),wandlezer:byId('df-wand').checked,notitie:byId('df-note').value.trim()});saveDB();closeModal('modal-generic');renderProjectDetail(pid);showToast('Deur opgeslagen');}
-function deleteDoor(did,pid){var door=DB.doors.find(function(x){return x.id===did;});if(!door)return;showConfirm('Deur "'+doorName(door)+'" naar prullenbak?',function(){moveToTrash('door',door);DB.doors=DB.doors.filter(function(x){return x.id!==did;});saveDB();renderProjectDetail(pid);showToast('Deur naar prullenbak');});}
-function deleteAllDoors(pid){showConfirm('Alle deuren naar de prullenbak?',function(){DB.doors.filter(function(d){return d.projectId===pid;}).forEach(function(d){moveToTrash('door',d);});DB.doors=DB.doors.filter(function(d){return d.projectId!==pid;});saveDB();renderProjectDetail(pid);showToast('Alle deuren naar prullenbak');});}
+function deleteDoor(did,pid){var door=DB.doors.find(function(x){return x.id===did;});if(!door)return;showConfirm('Deur "'+doorName(door)+'" naar prullenbak?',function(){moveToTrash('door',door);var _prevDoorIds=(DB.doors||[]).map(function(d){return d.id;});DB.doors=DB.doors.filter(function(x){return x.id!==did;});var _newDoorIds=(DB.doors||[]).map(function(d){return d.id;});_deleteDoorsFromFirestore(_prevDoorIds.filter(function(id){return _newDoorIds.indexOf(id)<0;}));saveDB();renderProjectDetail(pid);showToast('Deur naar prullenbak');});}
+function deleteAllDoors(pid){showConfirm('Alle deuren naar de prullenbak?',function(){DB.doors.filter(function(d){return d.projectId===pid;}).forEach(function(d){moveToTrash('door',d);});var _prevDoorIds=(DB.doors||[]).map(function(d){return d.id;});DB.doors=DB.doors.filter(function(d){return d.projectId!==pid;});var _newDoorIds=(DB.doors||[]).map(function(d){return d.id;});_deleteDoorsFromFirestore(_prevDoorIds.filter(function(id){return _newDoorIds.indexOf(id)<0;}));saveDB();renderProjectDetail(pid);showToast('Alle deuren naar prullenbak');});}
 
 /* ══ IMPORT ══ */
 function openImportDoors(pid){openModal('<h2>Deuren importeren</h2><div class="info-box">Kolommen: Verdieping, Kamer, Omschrijving, Type, Adres, Serienummer, Datum, Monteur, Bewoner, Wandlezer (ja/nee), Notitie</div><button class="btn btn-sm btn-success" onclick="downloadTemplate()" style="margin-bottom:12px">Template downloaden</button><div class="import-drop" onclick="byId(\'import-file\').click()"><div style="color:#BDBDBD;font-size:36px">&#8679;</div><p style="color:#888;font-size:16px;margin-top:8px">Klik of sleep .xlsx / .csv</p></div><div id="import-preview-area"></div><div class="modal-footer"><button class="btn" onclick="closeModal(\'modal-generic\')">Annuleren</button><button class="btn btn-primary" id="btn-do-import" style="display:none" onclick="doImportDoors(\''+pid+'\')">Importeren</button></div>');window._importRows=[];byId('import-file').onchange=function(e){if(e.target.files[0])parseImportFile(e.target.files[0]);};}
@@ -1423,13 +1533,65 @@ function triggerScorePhoto(did,pk,pid,isAdmin){var d=DB.doors.find(function(x){r
 function deleteScorePhoto(did,pk,idx,pid,isAdmin){showConfirm('Foto verwijderen?',function(){var d=DB.doors.find(function(x){return x.id===did;});if(!d||!d.scores||!d.scores[pk])return;d.scores[pk].splice(idx,1);saveDB();renderInstallView(did,pid,isAdmin);});}
 function showScorePhoto(did,pk,idx){var d=DB.doors.find(function(x){return x.id===did;});var src=d.scores&&d.scores[pk]?d.scores[pk][idx]:null;if(src){byId('photo-full').src=src;byId('modal-photo').classList.add('open');}}
 byId('photo-input').onchange=function(e){
-  if(!photoTarget)return;var did=photoTarget.did,pid=photoTarget.pid,isAdmin=photoTarget.isAdmin,sk=photoTarget.scoreKey;
-  var door=DB.doors.find(function(x){return x.id===did;});if(!door.scores)door.scores={};if(!door.scores[sk])door.scores[sk]=[];
-  var files=Array.from(e.target.files).slice(0,5-door.scores[sk].length);var loaded=0;
-  files.forEach(function(f){resizeImage(f,2*1024*1024,function(url){door.scores[sk].push(url);loaded++;if(loaded===files.length){saveDB();renderInstallView(did,pid,isAdmin);}});});
+  if(!photoTarget)return;
+  var did=photoTarget.did,pid=photoTarget.pid,isAdmin=photoTarget.isAdmin,sk=photoTarget.scoreKey;
+  var door=DB.doors.find(function(x){return x.id===did;});
+  if(!door.scores)door.scores={};
+  if(!door.scores[sk])door.scores[sk]=[];
+  var files=Array.from(e.target.files).slice(0,5-door.scores[sk].length);
+  if(!files.length)return;
+  // Show loading state immediately
+  var addBtn=document.querySelector('.photo-add-btn');
+  if(addBtn){addBtn.textContent='⏳';addBtn.style.pointerEvents='none';}
+  showToast('Foto verwerken…',true);
+  var loaded=0;
+  function processNext(i){
+    if(i>=files.length)return;
+    setTimeout(function(){
+      resizeImage(files[i],800*1024,function(url){
+        door.scores[sk].push(url);
+        loaded++;
+        if(loaded===files.length){
+          setTimeout(function(){saveDB();renderInstallView(did,pid,isAdmin);},0);
+        } else {
+          processNext(i+1);
+        }
+      });
+    },0);
+  }
+  processNext(0);
 };
-function resizeImage(file,maxBytes,cb){var reader=new FileReader();reader.onload=function(e){var img=new Image();img.onload=function(){var w=img.width,h=img.height,q=0.92;var cv=document.createElement('canvas');var ctx=cv.getContext('2d');cv.width=w;cv.height=h;ctx.drawImage(img,0,0,w,h);var r=cv.toDataURL('image/jpeg',q);while(r.length*0.75>maxBytes&&(w>200||h>200)){q=Math.max(0.5,q-0.1);var sc=Math.sqrt(maxBytes/(r.length*0.75));w=Math.max(200,Math.floor(w*sc));h=Math.max(200,Math.floor(h*sc));cv.width=w;cv.height=h;ctx.drawImage(img,0,0,w,h);r=cv.toDataURL('image/jpeg',q);}cb(r);};img.src=e.target.result;};reader.readAsDataURL(file);}
-function finishDoor(did,pid,isAdmin){var door=DB.doors.find(function(x){return x.id===did;});if(!hasQ1Photo(door)){alert('Voeg eerst een foto toe bij vraag 1.');return;}if(!hasQ5Photo(door)){alert('Voeg eerst een foto toe bij vraag 4.');return;}showToast(doorName(door)+' afgerond');if(isAdmin)adminGo('project',{projectId:pid});else renderInstaller();}
+function resizeImage(file,maxBytes,cb){
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var img=new Image();
+    img.onload=function(){
+      // Hard cap: max 1200px on longest side, quality 0.78
+      var MAX=1200,q=0.78;
+      var w=img.width,h=img.height;
+      if(w>MAX||h>MAX){
+        if(w>h){h=Math.round(h*MAX/w);w=MAX;}
+        else{w=Math.round(w*MAX/h);h=MAX;}
+      }
+      var cv=document.createElement('canvas');
+      cv.width=w;cv.height=h;
+      var ctx=cv.getContext('2d');
+      ctx.drawImage(img,0,0,w,h);
+      var r=cv.toDataURL('image/jpeg',q);
+      // One extra pass if still too big
+      if(r.length*0.75>maxBytes){
+        w=Math.round(w*0.7);h=Math.round(h*0.7);
+        cv.width=w;cv.height=h;
+        ctx.drawImage(img,0,0,w,h);
+        r=cv.toDataURL('image/jpeg',0.65);
+      }
+      cb(r);
+    };
+    img.src=e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+function finishDoor(did,pid,isAdmin){var door=DB.doors.find(function(x){return x.id===did;});if(!hasQ1Photo(door)){alert('Voeg eerst een foto toe bij vraag 1.');return;}if(!hasQ5Photo(door)){alert('Voeg eerst een foto toe bij vraag 4.');return;}saveDBNow();showToast(doorName(door)+' afgerond');if(isAdmin)adminGo('project',{projectId:pid});else renderInstaller();}
 
 /* ══ INSTALLER ══ */
 function renderInstaller(){
@@ -1503,6 +1665,7 @@ function stopCamera(){
 }
 
 function startCamera(){
+  _scanEngine='jsqr';_scanDetector=null;
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
     byId('scan-hint').textContent='Camera niet beschikbaar — gebruik handmatige invoer';return;
   }
@@ -1527,40 +1690,73 @@ function startCamera(){
 }
 
 function tryBarcodeDetector(){
-  if(!('BarcodeDetector' in window)){
-    byId('scan-hint').textContent='Auto-scan niet ondersteund — gebruik handmatige invoer';
-    return;
+  byId('scan-hint').textContent='Richt op QR-code of streepjescode';
+  // Try BarcodeDetector first (Chrome Android), fall back to jsQR
+  if('BarcodeDetector' in window){
+    try{
+      _scanDetector=new BarcodeDetector({formats:['qr_code','code_128','code_39','ean_8','ean_13','upc_a','upc_e','data_matrix']});
+      _scanEngine='native';
+    }catch(e){_scanEngine='jsqr';}
+  } else {
+    _scanEngine='jsqr';
   }
-  try{
-    _scanDetector=new BarcodeDetector({formats:['qr_code','code_128','code_39','ean_8','ean_13','upc_a','upc_e','data_matrix']});
-    byId('scan-hint').textContent='Richt op QR-code of streepjescode';
-    scanFrame();
-  }catch(e){
-    byId('scan-hint').textContent='Scanner niet beschikbaar — gebruik handmatige invoer';
-  }
+  scanFrame();
 }
 
 function scanFrame(){
   var vid=byId('scan-video');
-  if(!vid||!_scanDetector||!_scanStream)return;
-  _scanDetector.detect(vid)
-    .then(function(results){
-      if(results&&results.length>0){
-        var raw=results[0].rawValue.trim();
-        stopCamera();
-        if(_scanTab==='cylinder'){
-          /* extract 8-digit number */
-          var m=raw.match(/(\d{8})/);
-          var code=m?m[1]:raw.replace(/\D/g,'').slice(0,8);
-          handleCylinderScan(code);
-        } else {
-          handleDoorScan(raw);
+  if(!vid||!_scanStream)return;
+
+  if(_scanEngine==='native'&&_scanDetector){
+    _scanDetector.detect(vid)
+      .then(function(results){
+        if(results&&results.length>0){
+          processScanResult(results[0].rawValue.trim());
+          return;
         }
-        return;
-      }
+        _scanAnimFrame=requestAnimationFrame(scanFrame);
+      })
+      .catch(function(){
+        // Native failed, switch to jsQR
+        _scanEngine='jsqr';
+        _scanAnimFrame=requestAnimationFrame(scanFrame);
+      });
+  } else {
+    // jsQR engine: draw frame to canvas and decode
+    var canvas=byId('scan-canvas');
+    if(!canvas)return;
+    var ctx=canvas.getContext('2d');
+    if(vid.readyState!==vid.HAVE_ENOUGH_DATA){
       _scanAnimFrame=requestAnimationFrame(scanFrame);
-    })
-    .catch(function(){_scanAnimFrame=requestAnimationFrame(scanFrame);});
+      return;
+    }
+    canvas.width=vid.videoWidth;
+    canvas.height=vid.videoHeight;
+    ctx.drawImage(vid,0,0,canvas.width,canvas.height);
+    var imageData=ctx.getImageData(0,0,canvas.width,canvas.height);
+    var code=null;
+    try{
+      if(typeof jsQR==='function'){
+        code=jsQR(imageData.data,imageData.width,imageData.height,{inversionAttempts:'dontInvert'});
+      }
+    }catch(e){}
+    if(code&&code.data){
+      processScanResult(code.data.trim());
+      return;
+    }
+    _scanAnimFrame=requestAnimationFrame(scanFrame);
+  }
+}
+
+function processScanResult(raw){
+  stopCamera();
+  if(_scanTab==='cylinder'){
+    var m=raw.match(/(\d{8})/);
+    var code=m?m[1]:raw.replace(/\D/g,'').slice(0,8);
+    handleCylinderScan(code);
+  } else {
+    handleDoorScan(raw);
+  }
 }
 
 /* ══ CYLINDER SCAN ══ */
@@ -1720,8 +1916,24 @@ function dismissCameraPrompt(){
   localStorage.setItem('iloq_cam_asked','1');
 }
 
-renderLogin();
-showCameraPrompt();
+// Wait for Firebase to be ready then load data
+function _startApp(){
+  loadDB().then(function(){
+    renderLogin();
+    showCameraPrompt();
+  });
+}
+// Poll until Firebase is ready (handles async script loading)
+(function waitForFirebase(){
+  if(window._firebaseReady||typeof firebase!=='undefined'){
+    if(!window._firebaseReady&&typeof firebase!=='undefined'){
+      try{firebase.initializeApp(firebaseConfig);_db=firebase.firestore();window._firebaseReady=true;}catch(e){}
+    }
+    _startApp();
+  } else {
+    setTimeout(waitForFirebase,50);
+  }
+})();
 </script>
 
 <!-- camera permission prompt -->
