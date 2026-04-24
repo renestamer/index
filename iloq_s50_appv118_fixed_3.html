@@ -243,7 +243,7 @@ input[type=file]{display:none}
     <button onclick="closeModal('modal-photo')" style="background:#fff;border:2px solid #E0E0E0;border-radius:50%;cursor:pointer;font-size:18px;font-weight:800;height:36px;position:absolute;right:0;top:0;width:36px">x</button>
   </div>
 </div>
-<input type="file" id="photo-input" accept="image/*" multiple>
+<input type="file" id="photo-input" accept="image/*" capture="environment" multiple>
 <input type="file" id="import-file" accept=".xlsx,.xls,.csv">
 <div class="modal-bg" id="modal-scan">
   <div class="modal" id="modal-scan-inner" style="padding:0;overflow:hidden;max-width:480px">
@@ -1514,8 +1514,15 @@ function startCamera(){
       vid.play();
       vid.addEventListener('loadedmetadata',function(){tryBarcodeDetector();},{once:true});
     })
-    .catch(function(){
-      byId('scan-hint').textContent='Geen cameratoegang — gebruik handmatige invoer';
+    .catch(function(err){
+      var hint=byId('scan-hint');
+      if(hint){
+        if(err&&err.name==='NotAllowedError'){
+          hint.innerHTML='&#128683; Geen cameratoegang &mdash; sta toe via <b>browserinstellingen</b>';
+        } else {
+          hint.innerHTML='&#128683; Camera niet beschikbaar &mdash; gebruik handmatige invoer';
+        }
+      }
     });
 }
 
@@ -1686,7 +1693,46 @@ document.addEventListener('DOMContentLoaded',function(){
 });
 
 /* ══ INIT ══ */
+
+/* ── Camera permission ── */
+function showCameraPrompt(){
+  if(localStorage.getItem('iloq_cam_asked')==='1')return;
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)return;
+  var m=byId('modal-camperm');
+  if(m){m.style.display='flex';}
+}
+function requestCameraPermission(){
+  var m=byId('modal-camperm');
+  if(m)m.style.display='none';
+  localStorage.setItem('iloq_cam_asked','1');
+  navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}})
+    .then(function(stream){
+      stream.getTracks().forEach(function(t){t.stop();});
+      showToast('Cameratoegang verleend ✓',true);
+    })
+    .catch(function(){
+      showToast('Geen cameratoegang — schakel in via browserinstellingen',false);
+    });
+}
+function dismissCameraPrompt(){
+  var m=byId('modal-camperm');
+  if(m)m.style.display='none';
+  localStorage.setItem('iloq_cam_asked','1');
+}
+
 renderLogin();
+showCameraPrompt();
 </script>
+
+<!-- camera permission prompt -->
+<div class="modal-bg" id="modal-camperm" style="display:none;align-items:center;justify-content:center">
+  <div class="modal" style="max-width:340px;text-align:center">
+    <div style="font-size:48px;margin-bottom:12px">📷</div>
+    <h2 style="margin-bottom:8px">Cameratoegang</h2>
+    <p style="color:#666;font-size:15px;margin-bottom:20px">Deze app gebruikt de camera voor het scannen van QR-codes en het maken van foto's bij de installatie.<br><br>Tik op <b>Toestaan</b> als je browser om toestemming vraagt.</p>
+    <button class="btn btn-primary btn-full" style="margin-bottom:10px" onclick="requestCameraPermission()">📷 Camera toestaan</button>
+    <button class="btn btn-full" style="background:#F5F5F5;color:#666" onclick="dismissCameraPrompt()">Niet nu</button>
+  </div>
+</div>
 </body>
 </html>
