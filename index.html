@@ -898,69 +898,133 @@ function renderLocationDetail(lid){
 function toggleActiesMenu(){var m=byId('acties-menu');if(m)m.style.display=m.style.display==='none'?'block':'none';}
 function closeActiesMenu(){var m=byId('acties-menu');if(m)m.style.display='none';}
 
+
+function openDoorContextMenu(did,pid){
+  var d=DB.doors.find(function(x){return x.id===did;});
+  if(!d)return;
+  window._ctxDid=did;window._ctxPid=pid;
+  openModal(
+    '<h2 style="font-size:16px;margin-bottom:16px">'+doorName(d)+'</h2>'+
+    '<div style="display:flex;flex-direction:column;gap:8px">'+
+    '<button class="btn btn-full" style="min-height:52px;font-size:15px" onclick="closeModal(&apos;modal-generic&apos;);openEditDoor(window._ctxDid)">&#9998;&nbsp;&nbsp;Bewerken</button>'+
+    '<button class="btn btn-full btn-danger" style="min-height:52px;font-size:15px" onclick="closeModal(&apos;modal-generic&apos;);deleteDoor(window._ctxDid,window._ctxPid)">&#128465;&nbsp;&nbsp;Verwijderen</button>'+
+    '</div>'+
+    '<div class="modal-footer" style="margin-top:8px"><button class="btn btn-full" onclick="closeModal(&apos;modal-generic&apos;)">Annuleren</button></div>'
+  );
+}
+
 function renderProjectDetail(pid){
   var p=DB.projects.find(function(x){return x.id===pid;});if(!p)return;
   var loc=DB.locations.find(function(l){return l.id===p.locationId;})||{};
   var cli=DB.clients.find(function(c){return c.id===loc.clientId;})||{};
   var doors=DB.doors.filter(function(d){return d.projectId===pid;});
   var done=doors.filter(function(d){return statusOf(d)==='done';}).length;
+  var busy=doors.filter(function(d){return statusOf(d)==='busy';}).length;
+  var pctDone=doors.length?Math.round(done/doors.length*100):0;
 
+  // ── Project header card ──
   var h='<div class="breadcrumb">'+
-    '<span onclick="adminGo(\'clients\')">Klanten</span> › '+
-    '<span onclick="adminGo(\'client\',{clientId:\''+cli.id+'\'})">'+(cli.name||'?')+'</span> › '+
-    '<span onclick="adminGo(\'location\',{locationId:\''+loc.id+'\',clientId:\''+cli.id+'\'})">'+(loc.name||'?')+'</span> › '+p.name+
-    '</div>'+
-    '<div class="card"><div class="card-head"><h2>'+p.name+(p.archived?' <span class="badge b-orange">archief</span>':'')+'</h2></div>'+
-    '<div class="card-body">'+
-    '<div style="font-size:15px;line-height:1.8;margin-bottom:14px">'+
-    'Klant: <b>'+(cli.name||'—')+'</b><br>'+
-    'Locatie: <b>'+(loc.name||'—')+'</b><br>'+
-    'Monteur-pin: <b>'+p.pinInstaller+'</b> &nbsp;·&nbsp; Voortgang: <b>'+done+'/'+doors.length+'</b>'+
-    '</div>'+
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">'+
-    '<button class="btn btn-sm" style="background:#2D2D2D;color:#fff;border-color:#2D2D2D" onclick="toggleActiesMenu()">&#9776; Acties &#9660;</button>'+
-    '<button class="btn btn-sm btn-primary" onclick="openEmailProject(\''+pid+'\')">&#9993; E-mail rapport</button>'+
-    '<button class="btn btn-sm" style="background:#E3F2FD;color:#1565C0;border-color:#90CAF9" onclick="openScanner(\''+pid+'\')">'+'&#128247; Scan'+'</button>'+
-    '<button class="btn btn-sm" style="background:#FFF3E0;color:#E65100;border-color:#FFCC80" onclick="adminGo(\'projdash\',{projectId:\''+pid+'\'})">&#9998; Dashboard</button>'+
-    '</div>'+
-    '<div id="acties-menu" style="display:none;border:2px solid #E0E0E0;border-radius:14px;overflow:hidden;background:#fff;width:100%;max-width:340px">'+
-    '<button class="dmenu-btn gc-green" onclick="closeActiesMenu();openImportDoors(\''+pid+'\')">&#8679; Excel importeren</button>'+
-    '<button class="dmenu-btn" onclick="closeActiesMenu();openAddDoor(\''+pid+'\')">+ Deur toevoegen</button>'+
-    '<button class="dmenu-btn" onclick="closeActiesMenu();exportProject(\''+pid+'\')">&#8659; Export JSON</button>'+
-    '<div style="height:2px;background:#F4F4F2"></div>'+
-    (p.archived?'<button class="dmenu-btn" onclick="closeActiesMenu();unarchiveProject(\''+pid+'\')">&#8634; Terugzetten</button>':'<button class="dmenu-btn" onclick="closeActiesMenu();archiveProject(\''+pid+'\')">&#9744; Archiveren</button>')+
-    '<div style="height:2px;background:#F4F4F2"></div>'+
-    '<button class="dmenu-btn gc-red" onclick="closeActiesMenu();deleteAllDoors(\''+pid+'\')">&#10005; Deuren wissen</button>'+
-    '<button class="dmenu-btn gc-red" onclick="closeActiesMenu();deleteProject(\''+pid+'\')">&#10005; Project verwijderen</button>'+
-    '</div></div></div>';
+    '<span onclick=""adminGo(&apos;clients&apos;)">Klanten</span> › '+
+    '<span onclick=""adminGo(&apos;client&apos;,{clientId:&apos;&apos;+cli.id+&apos;&apos;})">'+( cli.name||'?')+'</span> › '+
+    '<span onclick=""adminGo(&apos;location&apos;,{locationId:&apos;&apos;+loc.id+&apos;&apos;,clientId:&apos;&apos;+cli.id+&apos;&apos;})">'+( loc.name||'?')+'</span> › '+p.name+
+    '</div>';
 
-  h+='<div class="card"><div class="card-head"><h2>Per verdieping</h2></div><div class="card-body" id="floor-ov"></div></div>';
-  h+='<div class="card"><div class="card-head"><h2>Alle deuren</h2></div>';
-  if(!doors.length)h+='<div class="empty">Nog geen deuren. Importeer of voeg handmatig toe.</div>';
-  else doors.forEach(function(d){
-    var st=statusOf(d);var p2=pct(d);
-    var scls={planned:'b-blue',busy:'b-orange',done:'b-green'}[st]||'b-blue';
-    var slbl={planned:'gepland',busy:'in uitvoering',done:'gereed'}[st]||st;
-    var wr=d.wandlezer?'<span class="wall-tag">W</span>':'';
-    var alt=doorHasAlert(d)?'<span class="badge b-red" style="margin-left:6px">! Score</span>':'';
-    h+='<div class="door-card"><div class="door-card-top">'+
-      '<div style="flex:1;min-width:0"><div class="door-card-name">'+doorName(d)+' '+wr+alt+'</div>'+
-      '<div class="door-card-meta">'+(d.verdieping?'Verd. '+d.verdieping+' · ':'')+( d.kamer?'Kamer '+d.kamer+' · ':'')+( d.type||'')+'</div>'+
-      '</div><span class="badge '+scls+'">'+slbl+'</span>'+
-      '</div><div class="prog-row" style="margin-top:8px">'+
-      '<div class="progress-bar" style="flex:1"><div class="progress-fill" style="width:'+p2+'%;background:'+(p2===100?'#2E7D32':'#F57C20')+'"></div></div>'+
-      '<span style="color:#888;font-size:14px;min-width:36px;text-align:right">'+p2+'%</span>'+
-      '</div><div class="door-card-actions">'+
-      '<button class="btn btn-sm btn-primary" onclick="adminGo(\'install\',{doorId:\''+d.id+'\',projectId:\''+pid+'\'})">Bekijken</button>'+
-      '<button class="btn btn-sm" onclick="openEditDoor(\''+d.id+'\')">Bewerken</button>'+
-      '<button class="btn btn-sm btn-danger" onclick="deleteDoor(\''+d.id+'\',\''+pid+'\')">Verwijderen</button>'+
-      '</div></div>';
-  });
+  // Hero project card
+  h+='<div class="card" style="margin-bottom:12px">'+
+    '<div style="padding:18px 16px 14px">'+
+    '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">'+
+    '<div style="min-width:0">'+
+    '<h2 style="color:#1A1A1A;font-size:20px;font-weight:900;letter-spacing:-.02em;margin:0 0 4px">'+p.name+(p.archived?' <span class="badge b-orange">archief</span>':'')+'</h2>'+
+    '<div style="color:#888;font-size:14px;line-height:1.6">'+
+    (cli.name?'<span>'+cli.name+'</span><span style="margin:0 6px;color:#DDD">·</span>':'')+(loc.name||'—')+'</div>'+
+    '</div>'+
+    // Big progress circle placeholder — use a simple arc text
+    '<div style="align-items:center;background:'+(pctDone===100?'#E8F5E9':'#FFF3E0')+';border-radius:50%;color:'+(pctDone===100?'#2E7D32':'#E65100')+';display:flex;flex-direction:column;flex-shrink:0;font-weight:900;height:64px;justify-content:center;width:64px">'+
+    '<span style="font-size:18px;line-height:1">'+pctDone+'%</span>'+
+    '<span style="font-size:11px;font-weight:600;opacity:.7">'+done+'/'+doors.length+'</span>'+
+    '</div>'+
+    '</div>'+
+    // Progress bar full width
+    '<div style="background:#F0F0EE;border-radius:8px;height:8px;margin-bottom:16px;overflow:hidden">'+
+    '<div style="background:'+(pctDone===100?'#4CAF50':'#F57C20')+';border-radius:8px;height:100%;transition:width .3s;width:'+pctDone+'%"></div>'+
+    '</div>'+
+    // Pin info strip
+    '<div style="align-items:center;background:#F8F8F6;border-radius:10px;display:flex;gap:16px;padding:10px 14px;margin-bottom:16px">'+
+    '<div><div style="color:#999;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase">Pin monteur</div>'+
+    '<div style="color:#1A1A1A;font-size:18px;font-weight:800;letter-spacing:.1em">'+p.pinInstaller+'</div></div>'+
+    '<div style="width:1px;background:#E0E0E0;align-self:stretch"></div>'+
+    '<div style="display:flex;gap:16px">'+
+    '<div><div style="color:#999;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase">Bezig</div><div style="color:#F57C20;font-size:18px;font-weight:800">'+busy+'</div></div>'+
+    '<div><div style="color:#999;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase">Gereed</div><div style="color:#4CAF50;font-size:18px;font-weight:800">'+done+'</div></div>'+
+    '<div><div style="color:#999;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase">Totaal</div><div style="color:#1A1A1A;font-size:18px;font-weight:800">'+doors.length+'</div></div>'+
+    '</div></div>'+
+    // Action buttons — 2 primary, then acties
+    '<div style="display:flex;gap:8px;margin-bottom:8px">'+
+    '<button style="align-items:center;background:#F57C20;border:none;border-radius:12px;color:#fff;cursor:pointer;display:flex;flex:1;font-family:inherit;font-size:15px;font-weight:700;gap:6px;justify-content:center;min-height:52px;padding:12px" onclick=""openScanner(&apos;&apos;+pid+&apos;&apos;)">&#128247; Scan</button>'+
+    '<button style="align-items:center;background:#1A1A1A;border:none;border-radius:12px;color:#fff;cursor:pointer;display:flex;flex:1;font-family:inherit;font-size:15px;font-weight:700;gap:6px;justify-content:center;min-height:52px;padding:12px" onclick=""openEmailProject(&apos;&apos;+pid+&apos;&apos;)">&#9993; Rapport</button>'+
+    '</div>'+
+    '<div style="display:flex;gap:8px">'+
+    '<button style="align-items:center;background:#F0F0EE;border:none;border-radius:12px;color:#555;cursor:pointer;display:flex;flex:1;font-family:inherit;font-size:14px;font-weight:700;gap:6px;justify-content:center;min-height:44px;padding:10px" onclick=""adminGo(&apos;projdash&apos;,{projectId:&apos;&apos;+pid+&apos;&apos;})">&#9998; Dashboard</button>'+
+    '<button style="align-items:center;background:#F0F0EE;border:none;border-radius:12px;color:#555;cursor:pointer;display:flex;flex:1;font-family:inherit;font-size:14px;font-weight:700;gap:6px;justify-content:center;min-height:44px;padding:10px" onclick=""toggleActiesMenu()">&#9776; Acties</button>'+
+    '</div>'+
+    '<div id="acties-menu" style="display:none;border:2px solid #E0E0E0;border-radius:14px;overflow:hidden;background:#fff;width:100%;margin-top:8px">'+
+    '<button class="dmenu-btn gc-green" onclick=""closeActiesMenu();openImportDoors(&apos;&apos;+pid+&apos;&apos;)">&#8679; Excel importeren</button>'+
+    '<button class="dmenu-btn" onclick=""closeActiesMenu();openAddDoor(&apos;&apos;+pid+&apos;&apos;)">+ Deur toevoegen</button>'+
+    '<button class="dmenu-btn" onclick=""closeActiesMenu();exportProject(&apos;&apos;+pid+&apos;&apos;)">&#8659; Export JSON</button>'+
+    '<div style="height:2px;background:#F4F4F2"></div>'+
+    (p.archived?'<button class="dmenu-btn" onclick=""closeActiesMenu();unarchiveProject(&apos;&apos;+pid+&apos;&apos;)">&#8634; Terugzetten</button>':'<button class="dmenu-btn" onclick=""closeActiesMenu();archiveProject(&apos;&apos;+pid+&apos;&apos;)">&#9744; Archiveren</button>')+
+    '<div style="height:2px;background:#F4F4F2"></div>'+
+    '<button class="dmenu-btn gc-red" onclick=""closeActiesMenu();deleteAllDoors(&apos;&apos;+pid+&apos;&apos;)">&#10005; Deuren wissen</button>'+
+    '<button class="dmenu-btn gc-red" onclick=""closeActiesMenu();deleteProject(&apos;&apos;+pid+&apos;&apos;)">&#10005; Project verwijderen</button>'+
+    '</div>'+
+    '</div></div>';
+
+  // ── Per verdieping ──
+  h+='<div class="card" style="margin-bottom:12px"><div class="card-head"><h2>Per verdieping</h2></div><div class="card-body" id="floor-ov" style="padding:12px 14px"></div></div>';
+
+  // ── Alle deuren ──
+  h+='<div class="card"><div class="card-head" style="justify-content:space-between"><h2>Alle deuren</h2>'+
+    '<button style="align-items:center;background:#F57C20;border:none;border-radius:10px;color:#fff;cursor:pointer;display:flex;font-family:inherit;font-size:13px;font-weight:700;gap:4px;min-height:38px;padding:8px 14px" onclick=""openAddDoor(&apos;&apos;+pid+&apos;&apos;)">+ Deur</button>'+
+    '</div>';
+
+  if(!doors.length){
+    h+='<div class="empty">Nog geen deuren.<br><button class="btn btn-primary" style="margin-top:12px" onclick=""openImportDoors(&apos;&apos;+pid+&apos;&apos;)">&#8679; Importeren</button></div>';
+  } else {
+    doors.forEach(function(d){
+      var st=statusOf(d);var p2=pct(d);
+      var dotCls={planned:'planned',busy:'busy',done:'done'}[st]||'planned';
+      var slbl={planned:'Gepland',busy:'Bezig',done:'Gereed'}[st]||st;
+      var slblColor={planned:'#1565C0',busy:'#E65100',done:'#2E7D32'}[st]||'#1565C0';
+      var slblBg={planned:'#E3F2FD',busy:'#FFF3E0',done:'#E8F5E9'}[st]||'#E3F2FD';
+      var wr=d.wandlezer?'<span class="wall-tag" style="margin-left:6px">W</span>':'';
+      var alert=doorHasAlert(d)?'<span style="background:#FFEBEE;border-radius:6px;color:#C62828;font-size:12px;font-weight:700;margin-left:6px;padding:2px 6px">!</span>':'';
+      var meta=[];
+      if(d.verdieping)meta.push('Verd. '+d.verdieping);
+      if(d.kamer)meta.push('Kamer '+d.kamer);
+      if(d.type)meta.push(d.type);
+
+      h+='<div class="door-card">'+
+        '<div class="door-card-top">'+
+        '<div style="flex:1;min-width:0">'+
+        '<div class="door-card-name">'+doorName(d)+wr+alert+'</div>'+
+        (meta.length?'<div class="door-card-meta">'+meta.join(' · ')+'</div>':'')+
+        '</div>'+
+        '<span style="background:'+slblBg+';border-radius:8px;color:'+slblColor+';flex-shrink:0;font-size:12px;font-weight:700;padding:4px 10px">'+slbl+'</span>'+
+        '</div>'+
+        // Progress bar
+        (p2>0?'<div style="background:#F0F0EE;border-radius:6px;height:5px;margin:10px 0 0;overflow:hidden"><div style="background:'+(p2===100?'#4CAF50':'#F57C20')+';height:100%;width:'+p2+'%"></div></div>':'<div style="height:5px;margin:10px 0 0"></div>')+
+        // Actions — open button big, more button small
+        '<div class="door-card-actions">'+
+        '<button class="door-card-open" onclick=""adminGo(&apos;install&apos;,{doorId:&apos;&apos;+d.id+&apos;&apos;,projectId:&apos;&apos;+pid+&apos;&apos;})">&#128270; Openen</button>'+
+        '<button class="door-card-more" onclick=""openDoorContextMenu(&apos;&apos;+d.id+&apos;&apos;,&apos;&apos;+pid+&apos;&apos;)" title="Meer opties">&#8942;</button>'+
+        '</div>'+
+        '</div>';
+    });
+  }
   h+='</div>';
   byId('main-content').innerHTML=h;
   renderFloorOverview(doors,pid,true);
 }
-
 /* ── Floor overview ── */
 function renderFloorOverview(doors,pid,isAdmin){
   var el=byId('floor-ov');if(!el)return;
@@ -1432,14 +1496,64 @@ function openNewLocation(cid){openModal('<h2>Locatie toevoegen</h2><div class="f
 function saveLocation(cid,lid){var name=byId('ml-name').value.trim();if(!name)return;if(lid){var l=DB.locations.find(function(x){return x.id===lid;});l.name=name;l.address=byId('ml-addr').value.trim();l.city=byId('ml-city').value.trim();l.note=byId('ml-note').value.trim();}else DB.locations.push({id:uid(),clientId:cid,name:name,address:byId('ml-addr').value.trim(),city:byId('ml-city').value.trim(),note:byId('ml-note').value.trim()});saveDB();closeModal('modal-generic');renderClientDetail(cid);showToast('Locatie opgeslagen');}
 function deleteLocation(lid){var loc=DB.locations.find(function(x){return x.id===lid;});if(!loc)return;showConfirm('Locatie "'+loc.name+'" naar prullenbak?',function(){var rp=DB.projects.filter(function(p){return p.locationId===lid;});var rd=DB.doors.filter(function(d){return rp.some(function(p){return p.id===d.projectId;});});moveToTrash('location',loc,{projects:rp,doors:rd});DB.locations=DB.locations.filter(function(l){return l.id!==lid;});DB.projects=DB.projects.filter(function(p){return p.locationId!==lid;});var _prevDoorIds=(DB.doors||[]).map(function(d){return d.id;});DB.doors=DB.doors.filter(function(d){return !rd.some(function(x){return x.id===d.id;});var _newDoorIds=(DB.doors||[]).map(function(d){return d.id;});_deleteDoorsFromFirestore(_prevDoorIds.filter(function(id){return _newDoorIds.indexOf(id)<0;}));});saveDB();adminRoute();showToast('Locatie naar prullenbak');});}
 
+
+/* ── Concept/draft bewaren ── */
+var DRAFT_KEY='iloq_draft_';
+var _currentDraftId=null;
+function saveDraft(formId){
+  var fields={};
+  ['mp-name','mp-loc','mp-loc-name','mp-loc-addr','mp-loc-city','mp-padmin','mp-pins','mp-note',
+   'mp-new-client','mp-loc-client'].forEach(function(id){
+    var el=byId(id);
+    if(el)fields[id]=el.tagName==='SELECT'?el.value:el.value;
+  });
+  localStorage.setItem(DRAFT_KEY+formId,JSON.stringify(fields));
+}
+function restoreDraft(formId){
+  _currentDraftId=formId;
+  var raw=localStorage.getItem(DRAFT_KEY+formId);
+  if(!raw)return false;
+  try{
+    var fields=JSON.parse(raw);
+    var restored=false;
+    Object.keys(fields).forEach(function(id){
+      var el=byId(id);
+      if(el&&fields[id]){el.value=fields[id];restored=true;}
+    });
+    if(restored){
+      var hint=document.createElement('div');
+      hint.style.cssText='background:#E8F5E9;border-radius:8px;color:#2E7D32;font-size:13px;padding:8px 12px;margin-bottom:12px;display:flex;align-items:center;gap:8px';
+      hint.innerHTML='&#128221; Concept hersteld. <button onclick="clearCurrentDraft()" style="background:none;border:none;color:#888;cursor:pointer;font-size:12px;text-decoration:underline;padding:0">Wissen</button>';
+      var modal=document.querySelector('#modal-generic-inner h2');
+      if(modal&&modal.parentNode)modal.parentNode.insertBefore(hint,modal.nextSibling);
+    }
+    return restored;
+  }catch(e){return false;}
+}
+function clearCurrentDraft(){if(_currentDraftId)clearDraft(_currentDraftId);}
+function clearDraft(formId){
+  localStorage.removeItem(DRAFT_KEY+formId);
+  var hint=document.querySelector('#modal-generic-inner [style*="E8F5E9"]');
+  if(hint)hint.remove();
+}
 function openNewProject(prefillLid){
   var hasLocs=DB.locations.length>0;
   var lo=DB.locations.map(function(l){var c2=DB.clients.find(function(x){return x.id===l.clientId;})||{};return'<option value="'+l.id+'"'+(l.id===prefillLid?' selected':'')+'>'+(c2.name||'?')+' — '+l.name+'</option>';}).join('');
   var co=DB.clients.map(function(c){return'<option value="'+c.id+'">'+c.name+'</option>';}).join('');
   openModal('<h2>Nieuw project</h2><div class="form-group"><label>Projectnaam *</label><input id="mp-name" placeholder="b.v. Renovatie 2025"></div><div class="form-group"><label>Locatie *</label>'+(hasLocs?'<select id="mp-loc"><option value="">— kies —</option>'+lo+'</select><div style="margin-top:8px"><button type="button" class="btn btn-sm" onclick="toggleNewLoc()">+ Nieuwe locatie</button></div>':'<div class="info-box">Geen locaties. Maak er hieronder een aan.</div>')+'</div><div id="new-loc-wrap" style="'+(hasLocs?'display:none':'')+'"><div style="background:#F4F4F2;border:2px solid #E0E0E0;border-radius:10px;margin-bottom:12px;padding:14px"><div style="color:#888;font-size:13px;font-weight:800;letter-spacing:.05em;margin-bottom:10px">NIEUWE LOCATIE</div>'+(DB.clients.length?'<div class="form-group"><label>Klant *</label><select id="mp-loc-client">'+co+'</select></div>':'<div class="form-group"><label>Klantnaam *</label><input id="mp-new-client" placeholder="Naam organisatie"></div>')+'<div class="form-row"><div class="form-group"><label>Locatienaam *</label><input id="mp-loc-name" placeholder="b.v. Blok A"></div><div class="form-group"><label>Adres</label><input id="mp-loc-addr"></div></div><div class="form-group"><label>Stad</label><input id="mp-loc-city"></div></div></div><div class="form-row"><div class="form-group"><label>Beheerder-pin</label><input id="mp-padmin" placeholder="1234" maxlength="8"></div><div class="form-group"><label>Monteur-pin</label><input id="mp-pins" placeholder="5678" maxlength="8"></div></div><div class="form-group"><label>Notitie</label><textarea id="mp-note"></textarea></div><div class="modal-footer"><button class="btn" onclick="closeModal(\'modal-generic\')">Annuleren</button><button class="btn btn-primary" onclick="saveProject()">Aanmaken</button></div>');
+  // Restore any saved draft and wire up auto-save
+  setTimeout(function(){
+    restoreDraft('project');
+    ['mp-name','mp-loc','mp-loc-name','mp-loc-addr','mp-loc-city','mp-padmin','mp-pins','mp-note','mp-new-client'].forEach(function(id){
+      var el=byId(id);
+      if(el)el.addEventListener('input',function(){saveDraft('project');});
+    });
+    var sel=byId('mp-loc');
+    if(sel)sel.addEventListener('change',function(){saveDraft('project');});
+  },50);
 }
 function toggleNewLoc(){var w=byId('new-loc-wrap');w.style.display=w.style.display==='none'?'':'none';}
-function saveProject(){var name=byId('mp-name').value.trim();if(!name){showToast('Vul een projectnaam in',false);return;}var lid=byId('mp-loc')?byId('mp-loc').value:'';var locName=byId('mp-loc-name')?byId('mp-loc-name').value.trim():'';if(locName){var cid='';if(byId('mp-loc-client'))cid=byId('mp-loc-client').value;else if(byId('mp-new-client')){var cn=byId('mp-new-client').value.trim();if(cn){var nc={id:uid(),name:cn,contact:'',email:'',note:''};DB.clients.push(nc);cid=nc.id;}}if(!cid&&DB.clients.length)cid=DB.clients[0].id;if(!cid){showToast('Koppel locatie aan klant',false);return;}var nl={id:uid(),clientId:cid,name:locName,address:byId('mp-loc-addr')?byId('mp-loc-addr').value.trim():'',city:byId('mp-loc-city')?byId('mp-loc-city').value.trim():'',note:''};DB.locations.push(nl);lid=nl.id;}if(!lid){showToast('Kies of maak een locatie',false);return;}var pa=byId('mp-padmin').value.trim()||'1234';var pi2=byId('mp-pins').value.trim()||'5678';DB.projects.push({id:uid(),locationId:lid,name:name,pinAdmin:pa,pinInstaller:pi2,note:byId('mp-note').value.trim(),createdAt:new Date().toISOString(),archived:false});saveDB();closeModal('modal-generic');showToast('Project aangemaakt');adminGo('dashboard');}
+function saveProject(){var name=byId('mp-name').value.trim();if(!name){showToast('Vul een projectnaam in',false);return;}var lid=byId('mp-loc')?byId('mp-loc').value:'';var locName=byId('mp-loc-name')?byId('mp-loc-name').value.trim():'';if(locName){var cid='';if(byId('mp-loc-client'))cid=byId('mp-loc-client').value;else if(byId('mp-new-client')){var cn=byId('mp-new-client').value.trim();if(cn){var nc={id:uid(),name:cn,contact:'',email:'',note:''};DB.clients.push(nc);cid=nc.id;}}if(!cid&&DB.clients.length)cid=DB.clients[0].id;if(!cid){showToast('Koppel locatie aan klant',false);return;}var nl={id:uid(),clientId:cid,name:locName,address:byId('mp-loc-addr')?byId('mp-loc-addr').value.trim():'',city:byId('mp-loc-city')?byId('mp-loc-city').value.trim():'',note:''};DB.locations.push(nl);lid=nl.id;}if(!lid){showToast('Kies of maak een locatie',false);return;}var pa=byId('mp-padmin').value.trim()||'1234';var pi2=byId('mp-pins').value.trim()||'5678';DB.projects.push({id:uid(),locationId:lid,name:name,pinAdmin:pa,pinInstaller:pi2,note:byId('mp-note').value.trim(),createdAt:new Date().toISOString(),archived:false});saveDB();clearDraft('project');closeModal('modal-generic');showToast('Project aangemaakt');adminGo('dashboard');}
 
 function doorFormHtml(pid,d){var to=DOOR_TYPES().map(function(t){return'<option'+(d&&d.type===t?' selected':'')+'>'+t+'</option>';}).join('');return'<h2>'+(d?'Deur bewerken':'Deur toevoegen')+'</h2><div class="form-row"><div class="form-group"><label>Verdieping</label><input id="df-verd" value="'+(d?d.verdieping||'':'')+'" placeholder="0,1,2…"></div><div class="form-group"><label>Kamer</label><input id="df-kamer" value="'+(d?d.kamer||'':'')+'" placeholder="3A"></div></div><div class="form-group"><label>Omschrijving</label><input id="df-naam" value="'+(d?d.naam||'':'')+'" placeholder="Gangdeur noord"></div><div class="form-row"><div class="form-group"><label>Type</label><select id="df-type">'+to+'</select></div><div class="form-group"><label>Adres</label><input id="df-adres" value="'+(d?d.adres||'':'')+'" placeholder="Straat + nr."></div></div><div class="form-row"><div class="form-group"><label>Serienummer S50</label><input id="df-serial" value="'+(d?d.serial||'':'')+'" placeholder="S50-"></div><div class="form-group"><label>Datum gepland</label><input type="date" id="df-datum" value="'+(d?d.datum||'':new Date().toISOString().slice(0,10))+'"></div></div><div class="form-row"><div class="form-group"><label>Monteur</label><input id="df-monteur" value="'+(d?d.monteur||'':'')+'" placeholder="Naam"></div><div class="form-group"><label>Bewoner</label><input id="df-bewoner" value="'+(d?d.bewoner||'':'')+'" placeholder="Naam"></div></div><div class="toggle-row"><input type="checkbox" id="df-wand"'+(d&&d.wandlezer?' checked':'')+'><label for="df-wand">Wandlezer gemonteerd</label></div><div class="form-group"><label>Notitie</label><textarea id="df-note">'+(d?d.notitie||'':'')+'</textarea></div><div class="modal-footer"><button class="btn" onclick="closeModal(\'modal-generic\')">Annuleren</button><button class="btn btn-primary" onclick="'+(d?'saveDoorEdit(\''+d.id+'\',\''+d.projectId+'\')':'saveDoor(\''+pid+'\')')+'">Opslaan</button></div>';}
 function openAddDoor(pid){openModal(doorFormHtml(pid,null));}
